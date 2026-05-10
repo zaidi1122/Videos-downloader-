@@ -1,0 +1,440 @@
+import { useState, useRef, useEffect } from "react";
+
+const PLATFORMS = {
+  youtube:   { name: "YouTube",    color: "#ff3b3b", bg: "#1a0808", domains: ["youtube.com","youtu.be"] },
+  tiktok:    { name: "TikTok",     color: "#00f2ea", bg: "#001a19", domains: ["tiktok.com"] },
+  instagram: { name: "Instagram",  color: "#e1306c", bg: "#1a0815", domains: ["instagram.com"] },
+  facebook:  { name: "Facebook",   color: "#4e9aff", bg: "#080f1a", domains: ["facebook.com","fb.watch"] },
+  twitter:   { name: "Twitter/X",  color: "#aaaaaa", bg: "#0f0f0f", domains: ["twitter.com","x.com"] },
+};
+
+function detectPlatform(url) {
+  for (const [key, p] of Object.entries(PLATFORMS)) {
+    if (p.domains.some(d => url.includes(d))) return { key, ...p };
+  }
+  return null;
+}
+
+function formatSize(bytes) {
+  if (!bytes) return "Unknown size";
+  if (bytes > 1e9) return (bytes / 1e9).toFixed(1) + " GB";
+  if (bytes > 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+  return (bytes / 1e3).toFixed(0) + " KB";
+}
+
+function formatDuration(sec) {
+  if (!sec) return "";
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+const QUALITY_OPTIONS = [
+  { value: "best",  label: "Best Quality", sub: "Highest available" },
+  { value: "1080",  label: "1080p",        sub: "Full HD" },
+  { value: "720",   label: "720p",         sub: "HD" },
+  { value: "480",   label: "480p",         sub: "SD" },
+  { value: "360",   label: "360p",         sub: "Low" },
+  { value: "audio", label: "Audio Only",   sub: "M4A format" },
+];
+
+export default function VidSnap() {
+  const [backendUrl, setBackendUrl] = useState(
+    () => localStorage.getItem("vidsnap_backend") || ""
+  );
+  const [showSettings, setShowSettings] = useState(false);
+  const [tempBackend, setTempBackend] = useState(backendUrl);
+
+  const [url, setUrl] = useState("");
+  const [platform, setPlatform] = useState(null);
+  const [quality, setQuality] = useState("best");
+
+  const [phase, setPhase] = useState("idle"); // idle | fetching | ready | downloading | done | error
+  const [info, setInfo] = useState(null);
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState(0);
+
+  const inputRef = useRef();
+
+  useEffect(() => {
+    setPlatform(detectPlatform(url));
+  }, [url]);
+
+  function saveBackend() {
+    localStorage.setItem("vidsnap_backend", tempBackend);
+    setBackendUrl(tempBackend);
+    setShowSettings(false);
+  }
+
+  async function handleFetch() {
+    if (!url.trim()) return;
+    if (!backendUrl.trim()) { setShowSettings(true); return; }
+
+    setPhase("fetching");
+    setError("");
+    setInfo(null);
+
+    try {
+      const base = backendUrl.replace(/\/$/, "");
+      const res = await fetch(`${base}/info`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to fetch video info");
+      }
+      const data = await res.json();
+      setInfo(data);
+      setPhase("ready");
+    } catch (e) {
+      setError(e.message);
+      setPhase("error");
+    }
+  }
+
+  async function handleDownload() {
+    if (!backendUrl.trim() || !url.trim()) return;
+    setPhase("downloading");
+    setProgress(0);
+
+    const interval = setInterval(() => {
+      setProgress(p => Math.min(p + Math.random() * 8, 88));
+    }, 400);
+
+    try {
+      const base = backendUrl.replace(/\/$/, "");
+      const res = await fetch(`${base}/download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, quality }),
+      });
+      clearInterval(interval);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Download failed");
+      }
+      setProgress(100);
+
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const nameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = nameMatch ? nameMatch[1] : "video.mp4";
+
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(link.href);
+
+      setPhase("done");
+    } catch (e) {
+      clearInterval(interval);
+      setError(e.message);
+      setPhase("error");
+    }
+  }
+
+  function reset() {
+    setUrl(""); setInfo(null); setError(""); setPhase("idle"); setProgress(0);
+  }
+
+  async function paste() {
+    const text = await navigator.clipboard.readText();
+    setUrl(text);
+  }
+
+  const accentColor = platform?.color || "#7c6dfa";
+  const isLoading = phase === "fetching" || phase === "downloading";
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #06060e; color: #e2e2f0; font-family: 'Syne', sans-serif; min-height: 100vh; }
+
+        .app { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 16px 80px; }
+
+        /* BG */
+        .bg-orb { position: fixed; border-radius: 50%; filter: blur(120px); pointer-events: none; z-index: 0; }
+        .orb1 { width: 500px; height: 500px; top: -100px; left: -100px; background: rgba(124,109,250,0.12); }
+        .orb2 { width: 400px; height: 400px; bottom: -80px; right: -80px; background: rgba(0,229,255,0.07); }
+
+        .content { position: relative; z-index: 1; width: 100%; max-width: 680px; }
+
+        /* Header */
+        .header { text-align: center; margin-bottom: 48px; }
+        .logo { display: inline-flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+        .logo-icon { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #7c6dfa, #00e5ff); display: flex; align-items: center; justify-content: center; font-size: 20px; }
+        .logo-text { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: #fff; }
+        .logo-text span { color: #7c6dfa; }
+        .tagline { color: #6b6b8a; font-size: 14px; font-family: 'DM Mono', monospace; }
+
+        /* Settings btn */
+        .settings-btn { position: fixed; top: 20px; right: 20px; z-index: 100; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #aaa; padding: 8px 14px; border-radius: 10px; cursor: pointer; font-size: 13px; font-family: 'Syne', sans-serif; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
+        .settings-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+        /* Card */
+        .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 20px; padding: 28px; backdrop-filter: blur(10px); margin-bottom: 16px; }
+
+        /* URL Input */
+        .input-wrap { position: relative; }
+        .platform-badge { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; font-family: 'DM Mono', monospace; white-space: nowrap; transition: all 0.3s; }
+        .platform-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .url-input { width: 100%; background: rgba(255,255,255,0.05); border: 1.5px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 16px 110px 16px 16px; color: #e2e2f0; font-size: 14px; font-family: 'DM Mono', monospace; outline: none; transition: border-color 0.2s; }
+        .url-input.has-platform { padding-left: 120px; }
+        .url-input:focus { border-color: #7c6dfa; }
+        .url-input::placeholder { color: #444; }
+        .paste-btn { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: rgba(124,109,250,0.15); border: 1px solid rgba(124,109,250,0.3); color: #7c6dfa; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-family: 'Syne', sans-serif; font-weight: 600; transition: all 0.2s; }
+        .paste-btn:hover { background: rgba(124,109,250,0.3); }
+
+        /* Main CTA */
+        .fetch-btn { width: 100%; margin-top: 14px; padding: 16px; border-radius: 14px; border: none; background: linear-gradient(135deg, #7c6dfa, #5a4fcf); color: #fff; font-size: 15px; font-weight: 700; font-family: 'Syne', sans-serif; cursor: pointer; transition: all 0.2s; letter-spacing: 0.3px; }
+        .fetch-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(124,109,250,0.35); }
+        .fetch-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .fetch-btn.platform-colored { background: linear-gradient(135deg, var(--pc), color-mix(in srgb, var(--pc) 60%, #000)); }
+
+        /* Info Card */
+        .info-card { display: flex; gap: 16px; align-items: flex-start; }
+        .thumbnail { width: 120px; height: 80px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: #111; }
+        .info-text h3 { font-size: 15px; font-weight: 700; color: #fff; line-height: 1.4; margin-bottom: 6px; }
+        .info-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+        .meta-tag { font-size: 11px; font-family: 'DM Mono', monospace; color: #6b6b8a; background: rgba(255,255,255,0.05); padding: 3px 8px; border-radius: 6px; }
+
+        /* Quality */
+        .section-label { font-size: 11px; font-weight: 700; color: #6b6b8a; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
+        .quality-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .q-btn { padding: 12px 8px; border-radius: 11px; border: 1.5px solid rgba(255,255,255,0.07); background: rgba(255,255,255,0.03); cursor: pointer; text-align: center; transition: all 0.15s; }
+        .q-btn:hover { border-color: rgba(124,109,250,0.4); background: rgba(124,109,250,0.08); }
+        .q-btn.selected { border-color: #7c6dfa; background: rgba(124,109,250,0.15); }
+        .q-label { font-size: 13px; font-weight: 700; color: #e2e2f0; display: block; }
+        .q-sub { font-size: 11px; color: #555; font-family: 'DM Mono', monospace; }
+
+        /* Download btn */
+        .dl-btn { width: 100%; padding: 18px; border-radius: 14px; border: none; color: #fff; font-size: 16px; font-weight: 800; font-family: 'Syne', sans-serif; cursor: pointer; transition: all 0.2s; letter-spacing: 0.3px; position: relative; overflow: hidden; }
+        .dl-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
+        .dl-btn:disabled { cursor: not-allowed; }
+
+        /* Progress */
+        .progress-bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; margin-top: 12px; }
+        .progress-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #7c6dfa, #00e5ff); transition: width 0.4s ease; }
+
+        /* Done state */
+        .done-state { text-align: center; padding: 20px; }
+        .done-icon { font-size: 40px; margin-bottom: 12px; }
+        .done-title { font-size: 18px; font-weight: 700; color: #00e5ff; margin-bottom: 8px; }
+        .done-sub { color: #6b6b8a; font-size: 13px; margin-bottom: 20px; }
+        .reset-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #aaa; padding: 10px 24px; border-radius: 10px; cursor: pointer; font-size: 13px; font-family: 'Syne', sans-serif; transition: all 0.2s; }
+        .reset-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+        /* Error */
+        .error-box { background: rgba(255,59,59,0.08); border: 1px solid rgba(255,59,59,0.2); border-radius: 12px; padding: 14px 16px; color: #ff6b6b; font-size: 13px; font-family: 'DM Mono', monospace; margin-top: 12px; }
+
+        /* Supported platforms */
+        .platforms-row { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+        .p-chip { font-size: 12px; font-family: 'DM Mono', monospace; color: #444; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 10px; border-radius: 20px; }
+
+        /* Modal */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .modal { background: #0d0d18; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 28px; width: 100%; max-width: 440px; }
+        .modal h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+        .modal p { color: #6b6b8a; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+        .modal input { width: 100%; background: rgba(255,255,255,0.05); border: 1.5px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 14px 16px; color: #e2e2f0; font-size: 13px; font-family: 'DM Mono', monospace; outline: none; margin-bottom: 12px; }
+        .modal input:focus { border-color: #7c6dfa; }
+        .modal-actions { display: flex; gap: 10px; }
+        .modal-save { flex: 1; padding: 12px; border-radius: 11px; border: none; background: #7c6dfa; color: #fff; font-weight: 700; font-family: 'Syne', sans-serif; cursor: pointer; }
+        .modal-cancel { padding: 12px 20px; border-radius: 11px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: #aaa; font-family: 'Syne', sans-serif; cursor: pointer; }
+        .modal-tip { font-size: 11px; color: #444; font-family: 'DM Mono', monospace; margin-top: 10px; line-height: 1.6; }
+
+        /* Spin */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.3s ease forwards; }
+      `}</style>
+
+      <div className="bg-orb orb1" />
+      <div className="bg-orb orb2" />
+
+      <button className="settings-btn" onClick={() => { setTempBackend(backendUrl); setShowSettings(true); }}>
+        ⚙ Backend
+      </button>
+
+      <div className="app">
+        <div className="content">
+          {/* Header */}
+          <div className="header">
+            <div className="logo">
+              <div className="logo-icon">⬇</div>
+              <div className="logo-text">Vid<span>Snap</span></div>
+            </div>
+            <div className="tagline">// download from anywhere. no api keys. no limits.</div>
+          </div>
+
+          {/* Main Card */}
+          <div className="card">
+            {phase === "done" ? (
+              <div className="done-state fade-in">
+                <div className="done-icon">✅</div>
+                <div className="done-title">Download Complete!</div>
+                <div className="done-sub">Your file has been saved to Downloads</div>
+                <button className="reset-btn" onClick={reset}>↩ Download Another</button>
+              </div>
+            ) : (
+              <>
+                {/* URL Input */}
+                <div className="input-wrap">
+                  {platform && (
+                    <div className="platform-badge" style={{ color: platform.color }}>
+                      <div className="platform-dot" style={{ background: platform.color }} />
+                      {platform.name}
+                    </div>
+                  )}
+                  <input
+                    ref={inputRef}
+                    className={`url-input ${platform ? "has-platform" : ""}`}
+                    placeholder="Paste video URL here..."
+                    value={url}
+                    onChange={e => setUrl(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && phase === "idle" && handleFetch()}
+                    disabled={isLoading}
+                  />
+                  <button className="paste-btn" onClick={paste} disabled={isLoading}>Paste</button>
+                </div>
+
+                {/* Error */}
+                {phase === "error" && (
+                  <div className="error-box fade-in">
+                    ⚠ {error}
+                    <br /><br />
+                    <span style={{color:"#ff9999"}}>Common fix:</span> Make sure your backend URL is set correctly in ⚙ Backend settings.
+                  </div>
+                )}
+
+                {/* Fetch button (idle/error) */}
+                {(phase === "idle" || phase === "error") && (
+                  <button
+                    className="fetch-btn"
+                    style={platform ? { "--pc": platform.color, background: `linear-gradient(135deg, ${platform.color}, ${platform.color}aa)` } : {}}
+                    onClick={handleFetch}
+                    disabled={!url.trim()}
+                  >
+                    {phase === "error" ? "↩ Try Again" : "Get Video Info →"}
+                  </button>
+                )}
+
+                {/* Fetching */}
+                {phase === "fetching" && (
+                  <button className="fetch-btn" disabled>
+                    <span className="spinner" /> Fetching video info...
+                  </button>
+                )}
+
+                {/* Video Info + Quality + Download */}
+                {(phase === "ready" || phase === "downloading") && info && (
+                  <div className="fade-in">
+                    {/* Info */}
+                    <div className="info-card" style={{ marginTop: 16, marginBottom: 20 }}>
+                      {info.thumbnail && (
+                        <img className="thumbnail" src={info.thumbnail} alt="" />
+                      )}
+                      <div className="info-text">
+                        <h3>{info.title}</h3>
+                        <div className="info-meta">
+                          {info.uploader && <span className="meta-tag">👤 {info.uploader}</span>}
+                          {info.duration && <span className="meta-tag">⏱ {formatDuration(info.duration)}</span>}
+                          {info.platform && <span className="meta-tag">📍 {info.platform}</span>}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quality */}
+                    <div className="section-label">Select Quality</div>
+                    <div className="quality-grid" style={{ marginBottom: 20 }}>
+                      {QUALITY_OPTIONS.map(q => (
+                        <button
+                          key={q.value}
+                          className={`q-btn ${quality === q.value ? "selected" : ""}`}
+                          onClick={() => setQuality(q.value)}
+                          disabled={phase === "downloading"}
+                        >
+                          <span className="q-label">{q.label}</span>
+                          <span className="q-sub">{q.sub}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Download button */}
+                    <button
+                      className="dl-btn"
+                      style={{
+                        background: phase === "downloading"
+                          ? "rgba(255,255,255,0.08)"
+                          : `linear-gradient(135deg, ${accentColor}, ${accentColor}99)`,
+                      }}
+                      onClick={handleDownload}
+                      disabled={phase === "downloading"}
+                    >
+                      {phase === "downloading" ? (
+                        <><span className="spinner" /> Downloading {quality === "best" ? "Best Quality" : quality === "audio" ? "Audio" : `${quality}p`}...</>
+                      ) : (
+                        `⬇ Download ${quality === "audio" ? "Audio" : quality === "best" ? "Best Quality" : `${quality}p`}`
+                      )}
+                    </button>
+
+                    {phase === "downloading" && (
+                      <div className="progress-bar">
+                        <div className="progress-fill" style={{ width: `${progress}%` }} />
+                      </div>
+                    )}
+
+                    {phase === "ready" && (
+                      <button className="reset-btn" style={{ marginTop: 12, width: "100%" }} onClick={reset}>
+                        ✕ Cancel
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Supported platforms */}
+          <div className="platforms-row">
+            {["YouTube", "TikTok", "Instagram", "Facebook", "Twitter/X", "Vimeo", "+1000 more"].map(p => (
+              <div key={p} className="p-chip">{p}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowSettings(false)}>
+          <div className="modal fade-in">
+            <h3>⚙ Backend Configuration</h3>
+            <p>
+              VidSnap needs a backend server running <strong>FastAPI + yt-dlp</strong> to download videos.
+              Deploy the provided <code>backend_main.py</code> on Railway and paste the URL below.
+            </p>
+            <input
+              placeholder="https://your-app.railway.app"
+              value={tempBackend}
+              onChange={e => setTempBackend(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && saveBackend()}
+            />
+            <div className="modal-actions">
+              <button className="modal-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
+              <button className="modal-save" onClick={saveBackend}>Save & Connect</button>
+            </div>
+            <div className="modal-tip">
+              Deploy steps: railway.app → New Project → Deploy from GitHub → upload backend_main.py + requirements.txt + Procfile → copy URL above
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
