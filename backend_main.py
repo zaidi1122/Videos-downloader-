@@ -41,9 +41,15 @@ def root():
 @app.post("/info")
 async def get_video_info(req: InfoRequest):
     ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
+    "quiet": True,
+    "no_warnings": True,
+    "extract_flat": False,
+    "socket_timeout": 60,
+    "nocheckcertificate": True,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    },
+    "extractor_args": {"youtube": {"player_client": ["android"]}},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
